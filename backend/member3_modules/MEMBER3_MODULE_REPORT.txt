@@ -1,0 +1,41 @@
+Member 3 Module Split (Prepared)
+
+Module 1: Slot Management + Overbooking Prevention
+File: member3_modules/module1_slot_managment.py
+
+Implemented:
+- Slot overlap/conflict detection
+- Daily capacity checks
+- Resource availability checks
+- Booking accept/reject decision output
+- Optional FastAPI router:
+  - POST /api/member3/module1/evaluate-slots
+
+Module 2: Combined AI Support (Policy + Chatbot + Weakness Analysis)
+File: member3_modules/module2_weakness_analysis.py
+
+Implemented:
+- Policy validation (rule-based)
+- Campus chatbot (keyword-intent)
+- Multi-term subject mark analysis
+- Weak/strong subject detection
+- Trend detection (improving/declining/stable)
+- Tutor assistance summary
+- Suggested study plan
+- Optional FastAPI router:
+  - POST /api/member3/module2/validate-policy
+  - POST /api/member3/module2/chat
+  - POST /api/member3/module2/analyze
+
+Why no paid OpenAI required:
+- Both modules currently run with local deterministic logic.
+- No external paid model dependency.
+
+Free alternatives for future upgrade:
+1) Ollama local models (llama3.1, mistral, phi3)
+2) Groq free tier API
+3) Hugging Face Inference API free tier
+4) Gemini free tier
+
+Verification:
+- Syntax checked with py_compile on both files.
