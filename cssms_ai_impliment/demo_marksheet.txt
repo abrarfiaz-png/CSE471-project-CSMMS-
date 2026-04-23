@@ -1,0 +1,39 @@
+UNIVERSITY OF DHAKA
+Department of Computer Science and Engineering
+Semester Final Examination Results
+
+Student Name: John Doe
+Student ID: CSE-2023-001
+Semester: Spring 2024
+Examination Date: December 15, 2024
+
+SUBJECT-WISE PERFORMANCE REPORT
+
+================================================================================
+Subject                  | Marks Obtained | Total Marks | Percentage | Grade
+================================================================================
+Mathematics              |      45        |     100     |    45%     |   F
+Physics                  |      52        |     100     |    52%     |   F
+Chemistry                |      78        |     100     |    78%     |   A
+English                  |      85        |     100     |    85%     |   A+
+Computer Science         |      62        |     100     |    62%     |   C
+Biology                  |      71        |     100     |    71%     |   B
+================================================================================
+
+OVERALL PERFORMANCE SUMMARY
+================================================================================
+Total Marks Obtained:    393 out of 600
+Overall Percentage:      65.5%
+Overall Grade:           C+
+CGPA:                    2.67
+
+ACADEMIC STATUS:         PASS (Minimum requirement: 40% in each subject)
+
+RECOMMENDATIONS:
+- Focus on improving Mathematics and Physics scores
+- Consider additional tutoring in quantitative subjects
+- Maintain strong performance in Chemistry and English
+
+Date of Issue: December 20, 2024
+Controller of Examinations
+University of Dhaka
