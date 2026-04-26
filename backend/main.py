@@ -45,3 +45,27 @@ def root():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=1677, reload=True)
+
+@app.get("/seed-demo-data")
+def seed_demo(db: Session = Depends(get_db)):
+    from passlib.context import CryptContext
+    from app_models import User
+    pwd = CryptContext(schemes=["bcrypt"])
+    
+    users = [
+        {"name": "Student Demo", "email": "student@demo.com", "password": "demo1234", "role": "student"},
+        {"name": "Provider Demo", "email": "provider@demo.com", "password": "demo1234", "role": "provider"},
+        {"name": "Admin Demo", "email": "admin@demo.com", "password": "demo1234", "role": "admin"},
+    ]
+    
+    for u in users:
+        exists = db.query(User).filter(User.email == u["email"]).first()
+        if not exists:
+            db.add(User(
+                name=u["name"],
+                email=u["email"],
+                hashed_password=pwd.hash(u["password"]),
+                role=u["role"]
+            ))
+    db.commit()
+    return {"message": "Demo users created!"}
