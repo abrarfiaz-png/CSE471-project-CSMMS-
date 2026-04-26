@@ -23,18 +23,20 @@ export default function AnalyticsPage() {
   const [report, setReport] = useState(null)
   const [services, setServices] = useState([])
   const [loading, setLoading] = useState(true)
+  const [selectedMonths, setSelectedMonths] = useState(6)
 
   useEffect(() => {
+    setLoading(true)
     Promise.all([
       api.get('/services/analytics/provider'),
       api.get('/services/my'),
-      api.get('/services/analytics/report')
+      api.get('/services/analytics/report', { params: { months: selectedMonths, history_limit: 120 } })
     ]).then(([a, s, r]) => {
       setStats(a.data)
       setServices(s.data)
       setReport(r.data)
     }).catch(() => {}).finally(() => setLoading(false))
-  }, [])
+  }, [selectedMonths])
 
   if (loading) return <div className="text-center py-16 text-slate-400">Loading analytics…</div>
 
@@ -45,16 +47,36 @@ export default function AnalyticsPage() {
           <BarChart2 size={28} className="text-primary-600" /> Analytics Dashboard
         </h1>
         <p className="text-slate-500 mt-1">Track your service performance and earnings</p>
+        {report?.generated_at && (
+          <p className="text-xs text-slate-400 mt-1">
+            Report generated: {new Date(report.generated_at).toLocaleString()}
+          </p>
+        )}
       </div>
 
-      {stats && (
+      <div className="card flex flex-wrap items-center gap-3">
+        <label className="text-sm font-medium text-slate-700">Report Window</label>
+        <select
+          className="input w-auto min-w-[140px]"
+          value={selectedMonths}
+          onChange={(e) => setSelectedMonths(Number(e.target.value))}
+        >
+          <option value={3}>Last 3 months</option>
+          <option value={6}>Last 6 months</option>
+          <option value={12}>Last 12 months</option>
+          <option value={24}>Last 24 months</option>
+        </select>
+        <p className="text-xs text-slate-500">This updates booking history, service efficiency, and monthly summary.</p>
+      </div>
+
+      {(stats || report?.summary) && (
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-          <StatCard icon={DollarSign} label="Estimated Earnings" value={`৳${stats.estimated_earnings}`} color="bg-emerald-500" />
-          <StatCard icon={Users} label="Students Helped" value={stats.students_helped} color="bg-blue-500" />
-          <StatCard icon={CheckCircle} label="Completed" value={stats.completed_bookings} color="bg-green-500" />
-          <StatCard icon={BarChart2} label="Total Bookings" value={stats.total_bookings} color="bg-purple-500" />
-          <StatCard icon={XCircle} label="Cancellations" value={stats.cancelled_bookings} color="bg-red-500" />
-          <StatCard icon={TrendingUp} label="Cancel Rate" value={`${stats.cancellation_ratio}%`} color="bg-orange-500" />
+          <StatCard icon={DollarSign} label="Estimated Earnings" value={`৳${stats?.estimated_earnings ?? report?.summary?.estimated_earnings ?? 0}`} color="bg-emerald-500" />
+          <StatCard icon={Users} label="Students Helped" value={stats?.students_helped ?? 0} color="bg-blue-500" />
+          <StatCard icon={CheckCircle} label="Completed" value={stats?.completed_bookings ?? report?.summary?.completed_bookings ?? 0} color="bg-green-500" />
+          <StatCard icon={BarChart2} label="Total Bookings" value={stats?.total_bookings ?? report?.summary?.total_bookings ?? 0} color="bg-purple-500" />
+          <StatCard icon={XCircle} label="Cancellations" value={stats?.cancelled_bookings ?? report?.summary?.cancelled_bookings ?? 0} color="bg-red-500" />
+          <StatCard icon={TrendingUp} label="Cancel Rate" value={`${stats?.cancellation_ratio ?? report?.summary?.cancellation_rate ?? 0}%`} color="bg-orange-500" />
         </div>
       )}
 
@@ -147,6 +169,8 @@ export default function AnalyticsPage() {
                   <th className="pb-3 font-medium">Bookings</th>
                   <th className="pb-3 font-medium">Completed</th>
                   <th className="pb-3 font-medium">Cancelled</th>
+                  <th className="pb-3 font-medium">Completion %</th>
+                  <th className="pb-3 font-medium">Cancel %</th>
                   <th className="pb-3 font-medium">Earnings</th>
                 </tr>
               </thead>
@@ -157,6 +181,8 @@ export default function AnalyticsPage() {
                     <td className="py-3 text-slate-600">{m.bookings}</td>
                     <td className="py-3 text-slate-600">{m.completed}</td>
                     <td className="py-3 text-slate-600">{m.cancelled}</td>
+                    <td className="py-3 text-slate-600">{m.completion_rate}%</td>
+                    <td className="py-3 text-slate-600">{m.cancellation_rate}%</td>
                     <td className="py-3 text-slate-600">৳{m.earnings}</td>
                   </tr>
                 ))}
@@ -175,6 +201,7 @@ export default function AnalyticsPage() {
                 <div>
                   <p className="text-sm font-semibold text-slate-800">{b.service_title}</p>
                   <p className="text-xs text-slate-500">{new Date(b.booked_at).toLocaleString()}</p>
+                  <p className="text-xs text-slate-400">Student: {b.student_name || 'N/A'}</p>
                 </div>
                 <div className="text-right">
                   <span className={`badge ${b.status === 'completed' ? 'bg-green-100 text-green-700' : b.status === 'cancelled' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}`}>{b.status}</span>

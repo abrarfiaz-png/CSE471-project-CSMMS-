@@ -123,6 +123,7 @@ def provider_bookings(db: Session = Depends(get_db), current_user: User = Depend
             "student_name": student.name if student else "N/A",
             "student_rating": round(student.student_rating, 2) if student else 0,
             "service_title": service.title if service else "N/A",
+            "amount": service.price_per_hour if service and service.price_per_hour else 0,
             "tutor_name": service.tutor.name if service and service.tutor else None,
             "slot_date": slot.date if slot else None,
             "slot_time": f"{slot.start_time} - {slot.end_time}" if slot else None,
@@ -275,14 +276,41 @@ def update_booking_status(
             ).count()
             old_slot.is_booked = remaining > 0
 
+    was_completed = booking.status == BookingStatus.completed
     booking.status = status
     booking.awaiting_tutor_approval = False
-    if status == BookingStatus.completed:
+    booking_earning = 0.0
+    if status == BookingStatus.completed and not was_completed:
         if service:
             service.students_helped += 1
+            booking_earning = float(service.price_per_hour or 0)
+
+    service_total_earnings = 0.0
+    provider_total_earnings = 0.0
+    if service:
+        completed_service_bookings = db.query(Booking).filter(
+            Booking.service_id == service.id,
+            Booking.status == BookingStatus.completed,
+        ).count()
+        service_total_earnings = round(float(service.price_per_hour or 0) * completed_service_bookings, 2)
+
+        provider_service_ids = [sid for (sid,) in db.query(Service.id).filter(Service.provider_id == current_user.id).all()]
+        if provider_service_ids:
+            completed_provider_bookings = db.query(Booking).join(Service, Booking.service_id == Service.id).filter(
+                Service.id.in_(provider_service_ids),
+                Booking.status == BookingStatus.completed,
+            ).all()
+            provider_total_earnings = round(sum(float((b.service.price_per_hour or 0)) for b in completed_provider_bookings if b.service), 2)
+
     add_notification(db, booking.student_id, "Booking Update", f"Your booking status changed to {status}")
     db.commit()
-    return {"message": f"Status updated to {status}"}
+    return {
+        "message": f"Status updated to {status}",
+        "status": status,
+        "booking_earning": booking_earning,
+        "service_total_earnings": service_total_earnings,
+        "provider_total_earnings": provider_total_earnings,
+    }
 
 
 @router.put("/{booking_id}/tutor-decision")

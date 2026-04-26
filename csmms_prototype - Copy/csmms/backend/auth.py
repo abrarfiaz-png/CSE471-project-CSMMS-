@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from app_models import User
 import os
+import bcrypt
 
 SECRET_KEY = os.getenv("SECRET_KEY", "csmms-secret-key-change-in-production")
 ALGORITHM = "HS256"
@@ -19,7 +20,15 @@ def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    try:
+        return pwd_context.verify(plain, hashed)
+    except ValueError:
+        # Fallback for environments where passlib+bcrypt can raise
+        # "password cannot be longer than 72 bytes" unexpectedly.
+        try:
+            return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+        except Exception:
+            return False
 
 def create_access_token(data: dict) -> str:
     to_encode = data.copy()

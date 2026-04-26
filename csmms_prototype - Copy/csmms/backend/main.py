@@ -8,12 +8,17 @@ app = FastAPI(title="Campus Service & Marketplace Management System", version="1
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "http://localhost:1677",
+        "http://127.0.0.1:1677",
+        "http://localhost:1678",
+        "http://127.0.0.1:1678",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5174",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "https://your-app.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -37,3 +42,6 @@ def startup_db():
 @app.get("/")
 def root():
     return {"message": "CSMMS API is running", "docs": "/docs"}
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="127.0.0.1", port=1677, reload=True)

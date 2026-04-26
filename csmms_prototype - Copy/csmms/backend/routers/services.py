@@ -236,7 +236,7 @@ def my_services(db: Session = Depends(get_db), current_user: User = Depends(requ
             "tutor_id": s.tutor_id,
             "tutor_name": s.tutor.name if s.tutor else None,
             "students_helped": s.students_helped, "completion_rate": s.completion_rate,
-            "total_bookings": len(bookings), "is_active": s.is_active,
+            "total_bookings": len(bookings), "total_earnings": round(float(earnings or 0), 2), "is_active": s.is_active,
             "cancellation_policy": s.cancellation_policy,
             "policy_validated": s.policy_validated, "policy_flagged": s.policy_flagged
         })

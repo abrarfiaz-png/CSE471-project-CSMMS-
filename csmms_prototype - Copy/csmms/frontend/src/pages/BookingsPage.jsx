@@ -81,8 +81,14 @@ export default function BookingsPage() {
 
   const updateStatus = async (id, status) => {
     try {
-      await api.put(`/bookings/${id}/status?status=${status}`)
-      toast.success(`Booking ${status}`)
+      const { data } = await api.put(`/bookings/${id}/status?status=${status}`)
+      if (status === 'completed') {
+        toast.success(
+          `Completed. +৳${data.booking_earning ?? 0} | Total: ৳${data.provider_total_earnings ?? 0}`
+        )
+      } else {
+        toast.success(`Booking ${status}`)
+      }
       fetchBookings()
     } catch (err) { toast.error(err.response?.data?.detail || 'Failed') }
   }

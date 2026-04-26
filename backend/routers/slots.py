@@ -4,7 +4,7 @@ from typing import List
 from datetime import date
 
 from database import get_db
-import models
+import app_models as models
 import schemas
 
 router = APIRouter(prefix="/api/slots", tags=["Slots"])

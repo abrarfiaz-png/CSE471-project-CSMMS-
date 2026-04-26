@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
 from database import get_db
 from app_models import Service, TimeSlot, Review, User, ServicePriority
 from auth import get_current_user, require_role
-from datetime import datetime
+from datetime import datetime, date
 from collections import defaultdict
 
 router = APIRouter()
@@ -217,6 +217,11 @@ def get_reviews(service_id: int, db: Session = Depends(get_db)):
 
 @router.get("/analytics/provider")
 def provider_analytics(db: Session = Depends(get_db), current_user: User = Depends(require_role("provider", "admin"))):
+    def status_value(raw_status):
+        if hasattr(raw_status, "value"):
+            return str(raw_status.value)
+        return str(raw_status)
+
     services = db.query(Service).filter(Service.provider_id == current_user.id).all()
     total_bookings = 0
     total_completed = 0
@@ -224,11 +229,12 @@ def provider_analytics(db: Session = Depends(get_db), current_user: User = Depen
     earnings = 0
     for s in services:
         for b in s.bookings:
+            status = status_value(b.status)
             total_bookings += 1
-            if b.status == "completed":
+            if status == "completed":
                 total_completed += 1
                 earnings += s.price_per_hour
-            elif b.status == "cancelled":
+            elif status == "cancelled":
                 total_cancelled += 1
     return {
         "total_services": len(services),
@@ -242,62 +248,190 @@ def provider_analytics(db: Session = Depends(get_db), current_user: User = Depen
 
 
 @router.get("/analytics/report")
-def provider_analytics_report(db: Session = Depends(get_db), current_user: User = Depends(require_role("provider", "admin"))):
-    services = db.query(Service).filter(Service.provider_id == current_user.id).all()
-    service_ids = [s.id for s in services]
-    bookings = []
-    if service_ids:
-        for s in services:
-            bookings.extend(s.bookings)
+def provider_analytics_report(
+    months: int = Query(6, ge=1, le=36),
+    history_limit: int = Query(100, ge=1, le=500),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("provider", "admin"))
+):
+    def status_value(raw_status):
+        if hasattr(raw_status, "value"):
+            return str(raw_status.value)
+        return str(raw_status)
 
-    monthly = defaultdict(lambda: {"bookings": 0, "completed": 0, "cancelled": 0, "earnings": 0.0})
+    def in_date_range(booked_at_dt: datetime) -> bool:
+        booked_date = booked_at_dt.date()
+        if start_date and booked_date < start_date:
+            return False
+        if end_date and booked_date > end_date:
+            return False
+        return True
+
+    services = db.query(Service).filter(Service.provider_id == current_user.id).all()
+    services_by_id = {s.id: s for s in services}
+
+    bookings = []
+    for service in services:
+        bookings.extend(service.bookings)
+
+    bookings = sorted(bookings, key=lambda b: b.booked_at, reverse=True)
+
+    if start_date or end_date:
+        bookings = [b for b in bookings if in_date_range(b.booked_at)]
+    else:
+        recent_month_keys = []
+        for booking in bookings:
+            month_key = booking.booked_at.strftime("%Y-%m")
+            if month_key not in recent_month_keys:
+                recent_month_keys.append(month_key)
+            if len(recent_month_keys) >= months:
+                break
+        if recent_month_keys:
+            bookings = [b for b in bookings if b.booked_at.strftime("%Y-%m") in recent_month_keys]
+
+    filtered_booking_ids = {booking.id for booking in bookings}
+
+    monthly = defaultdict(
+        lambda: {
+            "bookings": 0,
+            "completed": 0,
+            "cancelled": 0,
+            "approved": 0,
+            "pending": 0,
+            "rescheduled": 0,
+            "earnings": 0.0,
+        }
+    )
+
+    totals = {
+        "bookings": 0,
+        "completed": 0,
+        "cancelled": 0,
+        "approved": 0,
+        "pending": 0,
+        "rescheduled": 0,
+        "earnings": 0.0,
+    }
+
     history = []
-    for b in sorted(bookings, key=lambda x: x.booked_at, reverse=True):
-        service = next((s for s in services if s.id == b.service_id), None)
-        month_key = b.booked_at.strftime("%Y-%m")
+    for booking in bookings:
+        service = services_by_id.get(booking.service_id)
+        status = status_value(booking.status)
+        month_key = booking.booked_at.strftime("%Y-%m")
+        amount = float(service.price_per_hour if service else 0)
+
         monthly[month_key]["bookings"] += 1
-        if b.status == "completed":
+        totals["bookings"] += 1
+
+        if status == "completed":
             monthly[month_key]["completed"] += 1
-            monthly[month_key]["earnings"] += float(service.price_per_hour if service else 0)
-        if b.status == "cancelled":
+            monthly[month_key]["earnings"] += amount
+            totals["completed"] += 1
+            totals["earnings"] += amount
+        elif status == "cancelled":
             monthly[month_key]["cancelled"] += 1
+            totals["cancelled"] += 1
+        elif status == "approved":
+            monthly[month_key]["approved"] += 1
+            totals["approved"] += 1
+        elif status == "pending":
+            monthly[month_key]["pending"] += 1
+            totals["pending"] += 1
+        elif status == "rescheduled":
+            monthly[month_key]["rescheduled"] += 1
+            totals["rescheduled"] += 1
+
         history.append({
-            "booking_id": b.id,
+            "booking_id": booking.id,
+            "service_id": booking.service_id,
             "service_title": service.title if service else "N/A",
-            "status": b.status,
-            "booked_at": b.booked_at.isoformat(),
-            "amount": float(service.price_per_hour if service else 0),
+            "student_id": booking.student_id,
+            "student_name": booking.student.name if getattr(booking, "student", None) else "N/A",
+            "slot_id": booking.slot_id,
+            "status": status,
+            "booked_at": booking.booked_at.isoformat(),
+            "reschedule_count": booking.reschedule_count,
+            "notes": booking.notes,
+            "amount": amount,
         })
 
     service_efficiency = []
-    for s in services:
-        total = len(s.bookings)
-        completed = len([b for b in s.bookings if b.status == "completed"])
-        cancelled = len([b for b in s.bookings if b.status == "cancelled"])
-        efficiency = round((completed / total) * 100, 1) if total else 0.0
+    for service in services:
+        service_bookings = [
+            booking for booking in service.bookings
+            if booking.id in filtered_booking_ids
+        ]
+
+        total = len(service_bookings)
+        completed = len([booking for booking in service_bookings if status_value(booking.status) == "completed"])
+        cancelled = len([booking for booking in service_bookings if status_value(booking.status) == "cancelled"])
+        pending = len([booking for booking in service_bookings if status_value(booking.status) == "pending"])
+        avg_reschedule = round(
+            sum(booking.reschedule_count or 0 for booking in service_bookings) / total,
+            2
+        ) if total else 0.0
+
+        completion_rate = round((completed / total) * 100, 1) if total else 0.0
+        cancellation_rate = round((cancelled / total) * 100, 1) if total else 0.0
+
         service_efficiency.append({
-            "service_id": s.id,
-            "service_title": s.title,
-            "priority": s.priority,
+            "service_id": service.id,
+            "service_title": service.title,
+            "priority": str(service.priority.value) if hasattr(service.priority, "value") else str(service.priority),
             "total_bookings": total,
             "completed_bookings": completed,
             "cancelled_bookings": cancelled,
-            "efficiency_percent": efficiency,
+            "pending_bookings": pending,
+            "avg_reschedule_count": avg_reschedule,
+            "efficiency_percent": completion_rate,
+            "completion_rate": completion_rate,
+            "cancellation_rate": cancellation_rate,
         })
+
+    service_efficiency.sort(key=lambda item: item["efficiency_percent"], reverse=True)
 
     monthly_summary = []
-    for month in sorted(monthly.keys()):
+    for month in sorted(monthly.keys(), reverse=True):
         rec = monthly[month]
+        bookings_count = rec["bookings"]
         monthly_summary.append({
             "month": month,
-            "bookings": rec["bookings"],
+            "bookings": bookings_count,
             "completed": rec["completed"],
             "cancelled": rec["cancelled"],
+            "approved": rec["approved"],
+            "pending": rec["pending"],
+            "rescheduled": rec["rescheduled"],
             "earnings": round(rec["earnings"], 2),
+            "completion_rate": round((rec["completed"] / bookings_count) * 100, 1) if bookings_count else 0.0,
+            "cancellation_rate": round((rec["cancelled"] / bookings_count) * 100, 1) if bookings_count else 0.0,
         })
 
+    total_bookings = totals["bookings"]
     return {
-        "booking_history": history[:100],
+        "report_name": "booking_performance_report",
+        "generated_at": datetime.utcnow().isoformat(),
+        "filters": {
+            "months": months,
+            "history_limit": history_limit,
+            "start_date": start_date.isoformat() if start_date else None,
+            "end_date": end_date.isoformat() if end_date else None,
+        },
+        "summary": {
+            "total_services": len(services),
+            "total_bookings": total_bookings,
+            "completed_bookings": totals["completed"],
+            "cancelled_bookings": totals["cancelled"],
+            "approved_bookings": totals["approved"],
+            "pending_bookings": totals["pending"],
+            "rescheduled_bookings": totals["rescheduled"],
+            "completion_rate": round((totals["completed"] / total_bookings) * 100, 1) if total_bookings else 0.0,
+            "cancellation_rate": round((totals["cancelled"] / total_bookings) * 100, 1) if total_bookings else 0.0,
+            "estimated_earnings": round(totals["earnings"], 2),
+        },
+        "booking_history": history[:history_limit],
         "service_efficiency": service_efficiency,
         "monthly_summary": monthly_summary,
     }

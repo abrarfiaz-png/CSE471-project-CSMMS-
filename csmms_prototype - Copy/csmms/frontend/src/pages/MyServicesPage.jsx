@@ -271,6 +271,7 @@ export default function MyServicesPage() {
                 <div className="flex items-center gap-2 mb-3 text-xs text-slate-500">
                   <span>📚 {s.students_helped} helped</span>
                   <span>📋 {s.total_bookings} bookings</span>
+                  <span>💰 ৳{s.total_earnings ?? 0} earned</span>
                 </div>
                 <div className="flex items-center gap-2 mb-4">
                   {s.policy_validated ? (
