@@ -1,14 +1,73 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
 from database import get_db
-from app_models import Service, TimeSlot, Review, User, ServicePriority
+from app_models import Service, TimeSlot, Review, User, ServicePriority, BlockedDate, Booking, BookingStatus
 from auth import get_current_user, require_role
-from datetime import datetime, date
+from datetime import datetime, timedelta, date
 from collections import defaultdict
+import math
 
 router = APIRouter()
+
+# ─── Helper Functions ──────────────────────────────────────────────────────────
+def calculate_distance_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """
+    Calculate distance between two geographic points using Haversine formula.
+    Returns distance in kilometers.
+    """
+    if not all([lat1, lng1, lat2, lng2]):
+        return None
+    
+    R = 6371  # Earth's radius in kilometers
+    
+    lat1_rad = math.radians(lat1)
+    lng1_rad = math.radians(lng1)
+    lat2_rad = math.radians(lat2)
+    lng2_rad = math.radians(lng2)
+    
+    dlat = lat2_rad - lat1_rad
+    dlng = lng2_rad - lng1_rad
+    
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlng / 2) ** 2
+    c = 2 * math.asin(math.sqrt(a))
+    
+    return R * c
+
+
+def build_service_response(service: Service, db: Session, distance_km: Optional[float] = None) -> dict:
+    """Build standardized service response with provider and review info."""
+    provider = db.query(User).filter(User.id == service.provider_id).first()
+    reviews = db.query(Review).filter(Review.service_id == service.id).all()
+    avg_rating = round(sum(r.rating for r in reviews) / len(reviews), 1) if reviews else 0
+    
+    response = {
+        "id": service.id,
+        "title": service.title,
+        "description": service.description,
+        "category": service.category,
+        "price_per_hour": service.price_per_hour,
+        "priority": service.priority,
+        "location_name": service.location_name,
+        "location_lat": service.location_lat,
+        "location_lng": service.location_lng,
+        "provider_id": service.provider_id,
+        "provider_name": provider.name if provider else "Unknown",
+        "tutor_id": service.tutor_id,
+        "tutor_name": service.tutor.name if service.tutor else None,
+        "students_helped": service.students_helped,
+        "completion_rate": service.completion_rate,
+        "average_rating": avg_rating,
+        "review_count": len(reviews),
+        "policy_validated": service.policy_validated,
+        "policy_flagged": service.policy_flagged,
+    }
+    
+    if distance_km is not None:
+        response["distance_km"] = round(distance_km, 2)
+    
+    return response
 
 class ServiceCreate(BaseModel):
     title: str
@@ -36,6 +95,19 @@ class ReviewCreate(BaseModel):
 class ServicePriorityUpdate(BaseModel):
     priority: ServicePriority
 
+
+class ServiceCapacityUpdate(BaseModel):
+    max_daily_capacity: int
+
+
+class SlotBlockUpdate(BaseModel):
+    is_blocked: bool
+
+
+class BlockDateCreate(BaseModel):
+    date: str
+    reason: Optional[str] = None
+
 @router.get("/")
 def list_services(
     category: Optional[str] = None,
@@ -48,23 +120,7 @@ def list_services(
     if keyword:
         query = query.filter(Service.title.ilike(f"%{keyword}%"))
     services = query.all()
-    result = []
-    for s in services:
-        provider = db.query(User).filter(User.id == s.provider_id).first()
-        reviews = db.query(Review).filter(Review.service_id == s.id).all()
-        avg_rating = round(sum(r.rating for r in reviews) / len(reviews), 1) if reviews else 0
-        result.append({
-            "id": s.id, "title": s.title, "description": s.description,
-            "category": s.category, "price_per_hour": s.price_per_hour,
-            "priority": s.priority, "location_name": s.location_name,
-            "location_lat": s.location_lat, "location_lng": s.location_lng,
-            "provider_id": s.provider_id, "provider_name": provider.name if provider else "Unknown",
-            "tutor_id": s.tutor_id,
-            "tutor_name": s.tutor.name if s.tutor else None,
-            "students_helped": s.students_helped, "completion_rate": s.completion_rate,
-            "avg_rating": avg_rating, "review_count": len(reviews),
-            "policy_validated": s.policy_validated, "policy_flagged": s.policy_flagged
-        })
+    result = [build_service_response(s, db) for s in services]
     return result
 
 
@@ -82,11 +138,60 @@ def list_available_tutors(db: Session = Depends(get_db), current_user: User = De
         for t in tutors
     ]
 
+
+@router.get("/nearby")
+def find_nearby_services(
+    latitude: float,
+    longitude: float,
+    radius_km: float = 5.0,
+    category: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Find services near a geographic location.
+    
+    Args:
+        latitude: User's latitude
+        longitude: User's longitude
+        radius_km: Search radius in kilometers (default 5)
+        category: Optional service category filter
+    
+    Returns:
+        List of services within radius, sorted by distance
+    """
+    # Get all active services
+    query = db.query(Service).filter(Service.is_active == True)
+    
+    if category:
+        query = query.filter(Service.category == category)
+    
+    services = query.all()
+    nearby_services = []
+    
+    for service in services:
+        # Skip services without location data
+        if not service.location_lat or not service.location_lng:
+            continue
+        
+        # Calculate distance
+        distance = calculate_distance_km(latitude, longitude, service.location_lat, service.location_lng)
+        
+        # Include if within radius
+        if distance is not None and distance <= radius_km:
+            service_data = build_service_response(service, db, distance)
+            nearby_services.append(service_data)
+    
+    # Sort by distance
+    nearby_services.sort(key=lambda x: x["distance_km"])
+    
+    return nearby_services
+
+
 @router.post("/")
 def create_service(
     data: ServiceCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("student", "admin"))
+    current_user: User = Depends(require_role("student", "provider", "admin"))
 ):
     provider_id = current_user.id
     tutor_id = data.tutor_id
@@ -127,10 +232,12 @@ def my_services(db: Session = Depends(get_db), current_user: User = Depends(requ
         result.append({
             "id": s.id, "title": s.title, "category": s.category,
             "price_per_hour": s.price_per_hour, "priority": s.priority,
+            "max_daily_capacity": s.max_daily_capacity,
             "tutor_id": s.tutor_id,
             "tutor_name": s.tutor.name if s.tutor else None,
             "students_helped": s.students_helped, "completion_rate": s.completion_rate,
-            "total_bookings": len(bookings), "is_active": s.is_active,
+            "total_bookings": len(bookings), "total_earnings": round(float(earnings or 0), 2), "is_active": s.is_active,
+            "cancellation_policy": s.cancellation_policy,
             "policy_validated": s.policy_validated, "policy_flagged": s.policy_flagged
         })
     return result
@@ -150,6 +257,23 @@ def update_service_priority(
     db.commit()
     return {"message": f"Priority updated to {data.priority}"}
 
+
+@router.put("/{service_id}/capacity")
+def update_service_capacity(
+    service_id: int,
+    data: ServiceCapacityUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("provider", "admin"))
+):
+    if data.max_daily_capacity < 1:
+        raise HTTPException(status_code=400, detail="max_daily_capacity must be at least 1")
+    service = db.query(Service).filter(Service.id == service_id, Service.provider_id == current_user.id).first()
+    if not service:
+        raise HTTPException(status_code=404, detail="Service not found")
+    service.max_daily_capacity = data.max_daily_capacity
+    db.commit()
+    return {"message": f"Daily capacity updated to {data.max_daily_capacity}"}
+
 @router.post("/{service_id}/slots")
 def add_slot(
     service_id: int, data: SlotCreate,
@@ -159,6 +283,14 @@ def add_slot(
     service = db.query(Service).filter(Service.id == service_id, Service.provider_id == current_user.id).first()
     if not service:
         raise HTTPException(status_code=404, detail="Service not found")
+    if data.start_time >= data.end_time:
+        raise HTTPException(status_code=400, detail="End time must be after start time")
+    date_blocked = db.query(BlockedDate).filter(
+        BlockedDate.service_id == service_id,
+        BlockedDate.date == data.date,
+    ).first()
+    if date_blocked:
+        raise HTTPException(status_code=400, detail="This date is blocked by provider")
     # Prevent overlapping slots on the same date for the same service.
     conflict = db.query(TimeSlot).filter(
         TimeSlot.service_id == service_id,
@@ -184,6 +316,7 @@ def get_slots(service_id: int, db: Session = Depends(get_db)):
 def block_slot(
     service_id: int,
     slot_id: int,
+    data: SlotBlockUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role("provider", "admin"))
 ):
@@ -193,9 +326,65 @@ def block_slot(
     slot = db.query(TimeSlot).filter(TimeSlot.id == slot_id, TimeSlot.service_id == service_id).first()
     if not slot:
         raise HTTPException(status_code=404, detail="Slot not found")
-    slot.is_blocked = True
+    slot.is_blocked = data.is_blocked
     db.commit()
-    return {"message": "Slot blocked"}
+    return {"message": "Slot updated", "is_blocked": slot.is_blocked}
+
+
+@router.post("/{service_id}/blocked-dates")
+def block_unavailable_date(
+    service_id: int,
+    data: BlockDateCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("provider", "admin"))
+):
+    service = db.query(Service).filter(Service.id == service_id, Service.provider_id == current_user.id).first()
+    if not service:
+        raise HTTPException(status_code=404, detail="Service not found")
+    exists = db.query(BlockedDate).filter(BlockedDate.service_id == service_id, BlockedDate.date == data.date).first()
+    if exists:
+        raise HTTPException(status_code=400, detail="Date already blocked")
+    blocked = BlockedDate(service_id=service_id, date=data.date, reason=data.reason)
+    db.add(blocked)
+    db.commit()
+    db.refresh(blocked)
+    # Block existing slots for this date immediately.
+    slots = db.query(TimeSlot).filter(TimeSlot.service_id == service_id, TimeSlot.date == data.date).all()
+    for s in slots:
+        s.is_blocked = True
+    db.commit()
+    return {"id": blocked.id, "date": blocked.date, "reason": blocked.reason}
+
+
+@router.get("/{service_id}/blocked-dates")
+def get_blocked_dates(
+    service_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("provider", "admin"))
+):
+    service = db.query(Service).filter(Service.id == service_id, Service.provider_id == current_user.id).first()
+    if not service:
+        raise HTTPException(status_code=404, detail="Service not found")
+    rows = db.query(BlockedDate).filter(BlockedDate.service_id == service_id).order_by(BlockedDate.date.asc()).all()
+    return [{"id": r.id, "date": r.date, "reason": r.reason} for r in rows]
+
+
+@router.delete("/{service_id}/blocked-dates/{blocked_date_id}")
+def unblock_date(
+    service_id: int,
+    blocked_date_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("provider", "admin"))
+):
+    service = db.query(Service).filter(Service.id == service_id, Service.provider_id == current_user.id).first()
+    if not service:
+        raise HTTPException(status_code=404, detail="Service not found")
+    row = db.query(BlockedDate).filter(BlockedDate.id == blocked_date_id, BlockedDate.service_id == service_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Blocked date not found")
+    db.delete(row)
+    db.commit()
+    return {"message": "Blocked date removed"}
 
 @router.post("/{service_id}/reviews")
 def add_review(service_id: int, data: ReviewCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -217,11 +406,6 @@ def get_reviews(service_id: int, db: Session = Depends(get_db)):
 
 @router.get("/analytics/provider")
 def provider_analytics(db: Session = Depends(get_db), current_user: User = Depends(require_role("provider", "admin"))):
-    def status_value(raw_status):
-        if hasattr(raw_status, "value"):
-            return str(raw_status.value)
-        return str(raw_status)
-
     services = db.query(Service).filter(Service.provider_id == current_user.id).all()
     total_bookings = 0
     total_completed = 0
@@ -229,12 +413,11 @@ def provider_analytics(db: Session = Depends(get_db), current_user: User = Depen
     earnings = 0
     for s in services:
         for b in s.bookings:
-            status = status_value(b.status)
             total_bookings += 1
-            if status == "completed":
+            if b.status == "completed":
                 total_completed += 1
                 earnings += s.price_per_hour
-            elif status == "cancelled":
+            elif b.status == "cancelled":
                 total_cancelled += 1
     return {
         "total_services": len(services),
@@ -248,190 +431,394 @@ def provider_analytics(db: Session = Depends(get_db), current_user: User = Depen
 
 
 @router.get("/analytics/report")
-def provider_analytics_report(
-    months: int = Query(6, ge=1, le=36),
-    history_limit: int = Query(100, ge=1, le=500),
-    start_date: Optional[date] = Query(None),
-    end_date: Optional[date] = Query(None),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("provider", "admin"))
-):
-    def status_value(raw_status):
-        if hasattr(raw_status, "value"):
-            return str(raw_status.value)
-        return str(raw_status)
-
-    def in_date_range(booked_at_dt: datetime) -> bool:
-        booked_date = booked_at_dt.date()
-        if start_date and booked_date < start_date:
-            return False
-        if end_date and booked_date > end_date:
-            return False
-        return True
-
+def provider_analytics_report(db: Session = Depends(get_db), current_user: User = Depends(require_role("provider", "admin"))):
     services = db.query(Service).filter(Service.provider_id == current_user.id).all()
-    services_by_id = {s.id: s for s in services}
-
+    service_ids = [s.id for s in services]
     bookings = []
-    for service in services:
-        bookings.extend(service.bookings)
+    if service_ids:
+        for s in services:
+            bookings.extend(s.bookings)
 
-    bookings = sorted(bookings, key=lambda b: b.booked_at, reverse=True)
-
-    if start_date or end_date:
-        bookings = [b for b in bookings if in_date_range(b.booked_at)]
-    else:
-        recent_month_keys = []
-        for booking in bookings:
-            month_key = booking.booked_at.strftime("%Y-%m")
-            if month_key not in recent_month_keys:
-                recent_month_keys.append(month_key)
-            if len(recent_month_keys) >= months:
-                break
-        if recent_month_keys:
-            bookings = [b for b in bookings if b.booked_at.strftime("%Y-%m") in recent_month_keys]
-
-    filtered_booking_ids = {booking.id for booking in bookings}
-
-    monthly = defaultdict(
-        lambda: {
-            "bookings": 0,
-            "completed": 0,
-            "cancelled": 0,
-            "approved": 0,
-            "pending": 0,
-            "rescheduled": 0,
-            "earnings": 0.0,
-        }
-    )
-
-    totals = {
-        "bookings": 0,
-        "completed": 0,
-        "cancelled": 0,
-        "approved": 0,
-        "pending": 0,
-        "rescheduled": 0,
-        "earnings": 0.0,
-    }
-
+    monthly = defaultdict(lambda: {"bookings": 0, "completed": 0, "cancelled": 0, "earnings": 0.0})
     history = []
-    for booking in bookings:
-        service = services_by_id.get(booking.service_id)
-        status = status_value(booking.status)
-        month_key = booking.booked_at.strftime("%Y-%m")
-        amount = float(service.price_per_hour if service else 0)
-
+    for b in sorted(bookings, key=lambda x: x.booked_at, reverse=True):
+        service = next((s for s in services if s.id == b.service_id), None)
+        month_key = b.booked_at.strftime("%Y-%m")
         monthly[month_key]["bookings"] += 1
-        totals["bookings"] += 1
-
-        if status == "completed":
+        if b.status == "completed":
             monthly[month_key]["completed"] += 1
-            monthly[month_key]["earnings"] += amount
-            totals["completed"] += 1
-            totals["earnings"] += amount
-        elif status == "cancelled":
+            monthly[month_key]["earnings"] += float(service.price_per_hour if service else 0)
+        if b.status == "cancelled":
             monthly[month_key]["cancelled"] += 1
-            totals["cancelled"] += 1
-        elif status == "approved":
-            monthly[month_key]["approved"] += 1
-            totals["approved"] += 1
-        elif status == "pending":
-            monthly[month_key]["pending"] += 1
-            totals["pending"] += 1
-        elif status == "rescheduled":
-            monthly[month_key]["rescheduled"] += 1
-            totals["rescheduled"] += 1
-
         history.append({
-            "booking_id": booking.id,
-            "service_id": booking.service_id,
+            "booking_id": b.id,
             "service_title": service.title if service else "N/A",
-            "student_id": booking.student_id,
-            "student_name": booking.student.name if getattr(booking, "student", None) else "N/A",
-            "slot_id": booking.slot_id,
-            "status": status,
-            "booked_at": booking.booked_at.isoformat(),
-            "reschedule_count": booking.reschedule_count,
-            "notes": booking.notes,
-            "amount": amount,
+            "status": b.status,
+            "booked_at": b.booked_at.isoformat(),
+            "amount": float(service.price_per_hour if service else 0),
         })
 
     service_efficiency = []
-    for service in services:
-        service_bookings = [
-            booking for booking in service.bookings
-            if booking.id in filtered_booking_ids
-        ]
-
-        total = len(service_bookings)
-        completed = len([booking for booking in service_bookings if status_value(booking.status) == "completed"])
-        cancelled = len([booking for booking in service_bookings if status_value(booking.status) == "cancelled"])
-        pending = len([booking for booking in service_bookings if status_value(booking.status) == "pending"])
-        avg_reschedule = round(
-            sum(booking.reschedule_count or 0 for booking in service_bookings) / total,
-            2
-        ) if total else 0.0
-
-        completion_rate = round((completed / total) * 100, 1) if total else 0.0
-        cancellation_rate = round((cancelled / total) * 100, 1) if total else 0.0
-
+    for s in services:
+        total = len(s.bookings)
+        completed = len([b for b in s.bookings if b.status == "completed"])
+        cancelled = len([b for b in s.bookings if b.status == "cancelled"])
+        efficiency = round((completed / total) * 100, 1) if total else 0.0
         service_efficiency.append({
-            "service_id": service.id,
-            "service_title": service.title,
-            "priority": str(service.priority.value) if hasattr(service.priority, "value") else str(service.priority),
+            "service_id": s.id,
+            "service_title": s.title,
+            "priority": s.priority,
             "total_bookings": total,
             "completed_bookings": completed,
             "cancelled_bookings": cancelled,
-            "pending_bookings": pending,
-            "avg_reschedule_count": avg_reschedule,
-            "efficiency_percent": completion_rate,
-            "completion_rate": completion_rate,
-            "cancellation_rate": cancellation_rate,
+            "efficiency_percent": efficiency,
         })
-
-    service_efficiency.sort(key=lambda item: item["efficiency_percent"], reverse=True)
 
     monthly_summary = []
-    for month in sorted(monthly.keys(), reverse=True):
+    for month in sorted(monthly.keys()):
         rec = monthly[month]
-        bookings_count = rec["bookings"]
         monthly_summary.append({
             "month": month,
-            "bookings": bookings_count,
+            "bookings": rec["bookings"],
             "completed": rec["completed"],
             "cancelled": rec["cancelled"],
-            "approved": rec["approved"],
-            "pending": rec["pending"],
-            "rescheduled": rec["rescheduled"],
             "earnings": round(rec["earnings"], 2),
-            "completion_rate": round((rec["completed"] / bookings_count) * 100, 1) if bookings_count else 0.0,
-            "cancellation_rate": round((rec["cancelled"] / bookings_count) * 100, 1) if bookings_count else 0.0,
         })
 
-    total_bookings = totals["bookings"]
     return {
-        "report_name": "booking_performance_report",
-        "generated_at": datetime.utcnow().isoformat(),
-        "filters": {
-            "months": months,
-            "history_limit": history_limit,
-            "start_date": start_date.isoformat() if start_date else None,
-            "end_date": end_date.isoformat() if end_date else None,
-        },
-        "summary": {
-            "total_services": len(services),
-            "total_bookings": total_bookings,
-            "completed_bookings": totals["completed"],
-            "cancelled_bookings": totals["cancelled"],
-            "approved_bookings": totals["approved"],
-            "pending_bookings": totals["pending"],
-            "rescheduled_bookings": totals["rescheduled"],
-            "completion_rate": round((totals["completed"] / total_bookings) * 100, 1) if total_bookings else 0.0,
-            "cancellation_rate": round((totals["cancelled"] / total_bookings) * 100, 1) if total_bookings else 0.0,
-            "estimated_earnings": round(totals["earnings"], 2),
-        },
-        "booking_history": history[:history_limit],
+        "booking_history": history[:100],
         "service_efficiency": service_efficiency,
         "monthly_summary": monthly_summary,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ADVANCED ANALYTICS ENDPOINTS (NEW)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/analytics/earnings")
+def earnings_breakdown(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("provider", "admin")),
+    days: int = 90
+):
+    """Earnings breakdown by service, category, and over time"""
+    services = db.query(Service).filter(Service.provider_id == current_user.id).all()
+    cutoff_date = datetime.now() - timedelta(days=days)
+    
+    total_earnings = 0
+    by_service = []
+    by_category = defaultdict(float)
+    daily_earnings = defaultdict(float)
+    
+    for service in services:
+        service_earnings = 0
+        for booking in service.bookings:
+            if booking.status == "completed" and booking.updated_at >= cutoff_date:
+                service_earnings += service.price_per_hour
+                total_earnings += service.price_per_hour
+                by_category[service.category] += service.price_per_hour
+                day_key = booking.updated_at.date().isoformat()
+                daily_earnings[day_key] += service.price_per_hour
+        
+        if service_earnings > 0 or len([b for b in service.bookings if b.status == "completed"]):
+            by_service.append({
+                "service_id": service.id,
+                "title": service.title,
+                "category": service.category,
+                "price_per_hour": service.price_per_hour,
+                "earnings": service_earnings,
+                "completed_count": len([b for b in service.bookings if b.status == "completed"])
+            })
+    
+    daily_data = [
+        {"date": date, "earnings": amount}
+        for date, amount in sorted(daily_earnings.items())
+    ]
+    
+    return {
+        "total_earnings": round(total_earnings, 2),
+        "by_service": sorted(by_service, key=lambda x: x["earnings"], reverse=True),
+        "by_category": dict(sorted(by_category.items(), key=lambda x: x[1], reverse=True)),
+        "daily_earnings": daily_data,
+        "period_days": days
+    }
+
+
+@router.get("/analytics/booking-trends")
+def booking_trends(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("provider", "admin")),
+    days: int = 90
+):
+    """Booking trends over time - daily breakdown"""
+    services = db.query(Service).filter(Service.provider_id == current_user.id).all()
+    cutoff_date = datetime.now() - timedelta(days=days)
+    
+    daily_stats = defaultdict(lambda: {"total": 0, "completed": 0, "cancelled": 0, "pending": 0})
+    
+    for service in services:
+        for booking in service.bookings:
+            if booking.booked_at >= cutoff_date:
+                day_key = booking.booked_at.date().isoformat()
+                daily_stats[day_key]["total"] += 1
+                
+                if booking.status == "completed":
+                    daily_stats[day_key]["completed"] += 1
+                elif booking.status == "cancelled":
+                    daily_stats[day_key]["cancelled"] += 1
+                elif booking.status == "pending":
+                    daily_stats[day_key]["pending"] += 1
+    
+    trends = [
+        {
+            "date": date,
+            **stats
+        }
+        for date, stats in sorted(daily_stats.items())
+    ]
+    
+    return {
+        "trends": trends,
+        "period_days": days
+    }
+
+
+@router.get("/analytics/cancellation-analysis")
+def cancellation_analysis(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("provider", "admin")),
+    days: int = 90
+):
+    """Detailed cancellation analysis"""
+    services = db.query(Service).filter(Service.provider_id == current_user.id).all()
+    cutoff_date = datetime.now() - timedelta(days=days)
+    
+    total_bookings = 0
+    total_cancelled = 0
+    cancelled_by_service = {}
+    cancellation_by_month = defaultdict(lambda: {"total": 0, "cancelled": 0})
+    cancellation_by_day_of_week = defaultdict(lambda: {"total": 0, "cancelled": 0})
+    
+    for service in services:
+        service_total = 0
+        service_cancelled = 0
+        
+        for booking in service.bookings:
+            if booking.booked_at >= cutoff_date:
+                total_bookings += 1
+                service_total += 1
+                
+                if booking.status == "cancelled":
+                    total_cancelled += 1
+                    service_cancelled += 1
+                
+                month_key = booking.booked_at.strftime("%Y-%m")
+                day_of_week = booking.booked_at.strftime("%A")
+                
+                cancellation_by_month[month_key]["total"] += 1
+                cancellation_by_day_of_week[day_of_week]["total"] += 1
+                
+                if booking.status == "cancelled":
+                    cancellation_by_month[month_key]["cancelled"] += 1
+                    cancellation_by_day_of_week[day_of_week]["cancelled"] += 1
+        
+        if service_total > 0:
+            cancelled_by_service[service.title] = {
+                "total": service_total,
+                "cancelled": service_cancelled,
+                "rate": round((service_cancelled / service_total) * 100, 1)
+            }
+    
+    monthly_breakdown = [
+        {
+            "month": month,
+            "total": stats["total"],
+            "cancelled": stats["cancelled"],
+            "rate": round((stats["cancelled"] / stats["total"]) * 100, 1) if stats["total"] > 0 else 0
+        }
+        for month, stats in sorted(cancellation_by_month.items())
+    ]
+    
+    dow_breakdown = [
+        {
+            "day": day,
+            "total": stats["total"],
+            "cancelled": stats["cancelled"],
+            "rate": round((stats["cancelled"] / stats["total"]) * 100, 1) if stats["total"] > 0 else 0
+        }
+        for day, stats in cancellation_by_day_of_week.items()
+    ]
+    
+    overall_rate = round((total_cancelled / total_bookings) * 100, 1) if total_bookings > 0 else 0
+    
+    return {
+        "overall_cancellation_rate": overall_rate,
+        "total_bookings": total_bookings,
+        "total_cancelled": total_cancelled,
+        "by_service": cancelled_by_service,
+        "by_month": monthly_breakdown,
+        "by_day_of_week": dow_breakdown,
+        "period_days": days
+    }
+
+
+@router.get("/analytics/performance-insights")
+def performance_insights(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("provider", "admin")),
+):
+    """Deep performance insights for each service"""
+    services = db.query(Service).filter(Service.provider_id == current_user.id).all()
+    
+    service_insights = []
+    
+    for service in services:
+        total_bookings = len(service.bookings)
+        completed = len([b for b in service.bookings if b.status == "completed"])
+        cancelled = len([b for b in service.bookings if b.status == "cancelled"])
+        pending = len([b for b in service.bookings if b.status == "pending"])
+        
+        # Get reviews/ratings for this service
+        reviews = db.query(Review).filter(Review.service_id == service.id).all()
+        avg_rating = sum(r.rating for r in reviews) / len(reviews) if reviews else 0
+        
+        # Students helped by this service
+        students_helped = service.students_helped
+        
+        # Calculate metrics
+        completion_rate = (completed / total_bookings * 100) if total_bookings > 0 else 0
+        cancellation_rate = (cancelled / total_bookings * 100) if total_bookings > 0 else 0
+        
+        # Get recent 7 days performance
+        week_ago = datetime.now() - timedelta(days=7)
+        week_bookings = [b for b in service.bookings if b.booked_at >= week_ago]
+        week_completed = len([b for b in week_bookings if b.status == "completed"])
+        
+        service_insights.append({
+            "service_id": service.id,
+            "title": service.title,
+            "category": service.category,
+            "priority": service.priority,
+            "price_per_hour": service.price_per_hour,
+            "total_bookings": total_bookings,
+            "completed": completed,
+            "cancelled": cancelled,
+            "pending": pending,
+            "completion_rate": round(completion_rate, 1),
+            "cancellation_rate": round(cancellation_rate, 1),
+            "average_rating": round(avg_rating, 2),
+            "review_count": len(reviews),
+            "students_helped": students_helped,
+            "week_completed": week_completed,
+            "is_active": service.is_active
+        })
+    
+    return {
+        "services": sorted(service_insights, key=lambda x: x["completed"], reverse=True),
+        "total_services": len(service_insights),
+        "top_performing": sorted(service_insights, key=lambda x: x["completion_rate"], reverse=True)[:3]
+    }
+
+
+@router.get("/analytics/trend-comparison")
+def trend_comparison(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("provider", "admin")),
+):
+    """Compare current month vs previous month trends"""
+    services = db.query(Service).filter(Service.provider_id == current_user.id).all()
+    
+    now = datetime.now()
+    current_month_start = now.replace(day=1)
+    previous_month_end = current_month_start - timedelta(days=1)
+    previous_month_start = previous_month_end.replace(day=1)
+    
+    def get_month_stats(start_date, end_date):
+        total_bookings = 0
+        completed = 0
+        cancelled = 0
+        earnings = 0.0
+        
+        for service in services:
+            for booking in service.bookings:
+                if start_date <= booking.booked_at <= end_date:
+                    total_bookings += 1
+                    if booking.status == "completed":
+                        completed += 1
+                        earnings += service.price_per_hour
+                    elif booking.status == "cancelled":
+                        cancelled += 1
+        
+        return {
+            "total_bookings": total_bookings,
+            "completed": completed,
+            "cancelled": cancelled,
+            "earnings": round(earnings, 2),
+            "completion_rate": round((completed / total_bookings * 100), 1) if total_bookings > 0 else 0,
+            "cancellation_rate": round((cancelled / total_bookings * 100), 1) if total_bookings > 0 else 0
+        }
+    
+    current_stats = get_month_stats(current_month_start, now)
+    previous_stats = get_month_stats(previous_month_start, previous_month_end)
+    
+    # Calculate growth rates
+    booking_growth = ((current_stats["total_bookings"] - previous_stats["total_bookings"]) / previous_stats["total_bookings"] * 100) if previous_stats["total_bookings"] > 0 else 0
+    earnings_growth = ((current_stats["earnings"] - previous_stats["earnings"]) / previous_stats["earnings"] * 100) if previous_stats["earnings"] > 0 else 0
+    
+    return {
+        "current_month": current_stats,
+        "previous_month": previous_stats,
+        "booking_growth_percent": round(booking_growth, 1),
+        "earnings_growth_percent": round(earnings_growth, 1),
+        "current_month_name": current_month_start.strftime("%B %Y"),
+        "previous_month_name": previous_month_start.strftime("%B %Y")
+    }
+
+
+@router.get("/analytics/peak-analysis")
+def peak_analysis(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("provider", "admin")),
+    days: int = 30
+):
+    """Analyze peak booking hours and days"""
+    services = db.query(Service).filter(Service.provider_id == current_user.id).all()
+    cutoff_date = datetime.now() - timedelta(days=days)
+    
+    hour_stats = defaultdict(lambda: {"count": 0, "completed": 0})
+    day_of_week_stats = defaultdict(lambda: {"count": 0, "completed": 0})
+    
+    for service in services:
+        for booking in service.bookings:
+            if booking.booked_at >= cutoff_date:
+                hour = booking.booked_at.hour
+                day_of_week = booking.booked_at.strftime("%A")
+                
+                hour_stats[hour]["count"] += 1
+                day_of_week_stats[day_of_week]["count"] += 1
+                
+                if booking.status == "completed":
+                    hour_stats[hour]["completed"] += 1
+                    day_of_week_stats[day_of_week]["completed"] += 1
+    
+    peak_hours = sorted(
+        [{"hour": h, "bookings": s["count"], "completion_rate": round((s["completed"] / s["count"] * 100), 1)} 
+         for h, s in hour_stats.items()],
+        key=lambda x: x["bookings"],
+        reverse=True
+    )[:5]
+    
+    peak_days = sorted(
+        [{"day": d, "bookings": s["count"], "completion_rate": round((s["completed"] / s["count"] * 100), 1)} 
+         for d, s in day_of_week_stats.items()],
+        key=lambda x: x["bookings"],
+        reverse=True
+    )
+    
+    return {
+        "peak_hours": peak_hours,
+        "peak_days": peak_days,
+        "analysis_period_days": days
+    }
+

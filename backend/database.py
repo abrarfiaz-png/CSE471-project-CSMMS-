@@ -31,4 +31,5 @@ def apply_runtime_schema_updates():
         conn.execute(text("ALTER TABLE services ADD COLUMN IF NOT EXISTS tutor_id INTEGER"))
         conn.execute(text("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS awaiting_tutor_approval BOOLEAN DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS selected_by_provider BOOLEAN DEFAULT FALSE"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS blocked_dates (id SERIAL PRIMARY KEY, service_id INTEGER REFERENCES services(id), date VARCHAR(20) NOT NULL, reason VARCHAR(255), created_at TIMESTAMP DEFAULT NOW())"))
     Base.metadata.create_all(bind=engine)

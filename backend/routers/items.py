@@ -36,7 +36,7 @@ class ItemResponse(BaseModel):
     id: int
     title: str
     description: Optional[str]
-    price: float
+    price: str
     category: str
     image_url: Optional[str]
     is_available: bool

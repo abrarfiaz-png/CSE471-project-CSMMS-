@@ -118,6 +118,8 @@ class SlotOut(SlotBase):
     service_id: int
     is_blocked: bool
     current_bookings: int
+    created_at: datetime
+    updated_at: datetime
 
     class Config:
         from_attributes = True
@@ -171,3 +173,36 @@ class NearbySearchParams(BaseModel):
     latitude: float
     longitude: float
     radius_km: float = Field(5.0, gt=0)
+
+
+# ─── Blocked Dates Schemas ────────────────────────────────────────────────────
+class BlockedDateCreate(BaseModel):
+    blocked_date: date
+    reason: Optional[str] = Field(None, max_length=500)
+
+
+class BlockedDateOut(BlockedDateCreate):
+    id: int
+    service_id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ─── Availability Status ──────────────────────────────────────────────────────
+class SlotAvailabilityStatus(BaseModel):
+    is_available: bool
+    reason: Optional[str] = None
+    available_slots: int = 0
+    max_slots: int = 0
+
+
+class CapacityInfo(BaseModel):
+    service_id: int
+    slot_date: date
+    max_capacity: int
+    current_bookings: int
+    available_slots: int
+    is_full: bool
+    is_date_blocked: bool

@@ -89,6 +89,7 @@ class Service(Base):
     bookings = relationship("Booking", back_populates="service")
     slots = relationship("TimeSlot", back_populates="service")
     reviews = relationship("Review", back_populates="service")
+    blocked_dates = relationship("BlockedDate", back_populates="service")
 
 
 class TimeSlot(Base):
@@ -102,6 +103,17 @@ class TimeSlot(Base):
     is_booked = Column(Boolean, default=False)
 
     service = relationship("Service", back_populates="slots")
+
+
+class BlockedDate(Base):
+    __tablename__ = "blocked_dates"
+    id = Column(Integer, primary_key=True, index=True)
+    service_id = Column(Integer, ForeignKey("services.id"), index=True)
+    date = Column(String(20), nullable=False)
+    reason = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    service = relationship("Service", back_populates="blocked_dates")
 
 
 class Booking(Base):
