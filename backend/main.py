@@ -50,13 +50,13 @@ if __name__ == "__main__":
 def seed_demo():
     from database import SessionLocal
     from passlib.context import CryptContext
-    from app_models import User
+    from app_models import User, UserRole
     db = SessionLocal()
     pwd = CryptContext(schemes=["bcrypt"])
     users = [
-        {"name": "Student Demo", "email": "student@demo.com", "password": "demo1234", "role": "student"},
-        {"name": "Provider Demo", "email": "provider@demo.com", "password": "demo1234", "role": "provider"},
-        {"name": "Admin Demo", "email": "admin@demo.com", "password": "demo1234", "role": "admin"},
+        {"name": "Student Demo", "email": "student@demo.com", "password": "demo1234", "role": UserRole.student},
+        {"name": "Provider Demo", "email": "provider@demo.com", "password": "demo1234", "role": UserRole.provider},
+        {"name": "Admin Demo", "email": "admin@demo.com", "password": "demo1234", "role": UserRole.admin},
     ]
     for u in users:
         exists = db.query(User).filter(User.email == u["email"]).first()
